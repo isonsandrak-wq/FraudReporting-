@@ -1,0 +1,55 @@
+-- 1. Truncates the fraud date to the start of its week (Monday) and casts it as a pure DATE (no time part)
+--    Significance: Groups losses by week, making trends easier to see and reducing daily noise.
+--    Use: Allows the user to filter by a specific week and see all fraud types aggregated for that period.
+SELECT 
+    CAST(DATE_TRUNC('week', Date_Of_First_Fraud) AS DATE) AS week_start,
+
+-- 2. Converts the numeric fraud type code (e.g., '01') into a human‑readable label
+--    Significance: Makes output understandable for non‑technical stakeholders and dashboard viewers.
+--    Use: Serves as the dimension for bar charts, pie charts, and row labels in reports.
+    CASE 
+        WHEN Fraud_Type = '01' THEN 'Identity Theft'
+        WHEN Fraud_Type = '02' THEN 'Synthetic Identity'
+        WHEN Fraud_Type = '03' THEN 'Account Takeover'
+        WHEN Fraud_Type = '04' THEN 'First‑Party Fraud'
+        WHEN Fraud_Type = '06' THEN 'Card Not Received'
+        WHEN Fraud_Type = '07' THEN 'Counterfeit'
+        WHEN Fraud_Type = '08' THEN 'Lost/Stolen Card'
+        ELSE 'Other'
+    END AS fraud_type_label,
+
+-- 3. Sums the loss amount for each (week, fraud type) combination; rounds to two decimals
+--    Significance: Gives the total dollar loss attributable to each fraud type within a week.
+--    Use: Forms the bar height in a bar chart, answering “Which fraud type cost the most this week?”
+    ROUND(SUM(Loss_Amount), 2) AS total_loss_this_week_by_type,
+
+-- 4. Window function: sums the loss over the entire week (all types combined) and repeats the value for every row in that week
+--    Significance: Provides a benchmark of the week’s total fraud loss, independent of type.
+--    Use: Can be displayed as a horizontal line (overall weekly total) or used to calculate percentages.
+    ROUND(SUM(SUM(Loss_Amount)) OVER (PARTITION BY DATE_TRUNC('week', Date_Of_First_Fraud)), 2) AS total_loss_this_week_all_types,
+
+-- 5. Computes the percentage that each fraud type’s loss represents of the week’s total loss
+--    Significance: Shows the proportional impact of each fraud type, normalized by week.
+--    Use: Great for stacked bar charts, pie charts, or identifying which type dominates losses in a given week.
+    ROUND(100.0 * SUM(Loss_Amount) / SUM(SUM(Loss_Amount)) OVER (PARTITION BY DATE_TRUNC('week', Date_Of_First_Fraud)), 1) AS percentage_of_week_total,
+
+-- 6. Window function: averages the per‑type loss amounts across all fraud types within the week
+--    Significance: Serves as a benchmark for “typical” loss per type. Types above this line are over‑performing in losses.
+--    Use: Draw a constant line in a bar chart; bars above the line are high‑risk types for that week.
+    ROUND(AVG(SUM(Loss_Amount)) OVER (PARTITION BY DATE_TRUNC('week', Date_Of_First_Fraud)), 0) AS avg_loss_per_type_this_week
+
+-- 7. Source table: the fraud loss reporting table you built
+FROM default.fraud_losses_fraud_stats
+
+-- 8. Filters to only closed cases (finalized loss amounts) and non‑null loss values
+--    Significance: Ensures only complete, accurate data is included; avoids skew from pending cases.
+WHERE Case_Status = 'Closed' 
+  AND Loss_Amount IS NOT NULL
+
+-- 9. Groups by the week start and the original fraud type code (before CASE conversion)
+--    Significance: Aggregates all claims that fall into the same week and the same type.
+GROUP BY DATE_TRUNC('week', Date_Of_First_Fraud), Fraud_Type
+
+-- 10. Sorts results chronologically by week, and within each week by descending loss (largest loss first)
+--     Significance: Makes it easy to see, for each week, which fraud type caused the most damage.
+ORDER BY week_start, total_loss_this_week_by_type DESC;
